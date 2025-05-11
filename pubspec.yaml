@@ -36,6 +36,10 @@ dependencies:
   cupertino_icons: ^1.0.8
   flutter_colorpicker: ^1.1.0
   google_fonts: ^6.2.1
+  file_picker: ^10.1.7
+  pdf: ^3.11.3
+  share_plus: ^11.0.0
+  docx_template: ^0.4.0
 
 dev_dependencies:
   flutter_test:

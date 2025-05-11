@@ -2,7 +2,17 @@
 import 'dart:math';
 // import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+
+import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:docx_template/docx_template.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   runApp(MyApp());
@@ -95,6 +105,29 @@ class _DrawingScreenState extends State<DrawingScreen> {
       appBar: AppBar(
         title: Text('Rectangle to Text'),
         actions: [
+          PopupMenuButton<String>(
+            icon: Icon(Icons.file_open),
+            onSelected: (value) {
+              if (value == 'new') _newFile();
+              else if (value == 'open') _openFile();
+              else if (value == 'save') _saveFile(); // Add this
+              else if (value == 'pdf') _saveAsPdf();
+              // else if (value == 'word') _saveAsWord();
+            },
+            itemBuilder: (BuildContext context) {
+              return [
+                PopupMenuItem(value: 'new', child: Text('New File')),
+                PopupMenuItem(value: 'open', child: Text('Open File')),
+                PopupMenuItem( // Add this new item
+                  value: 'save',
+                  child: Text('Save'),
+                ),
+                PopupMenuItem(value: 'pdf', child: Text('Save as PDF')),
+                PopupMenuItem(value: 'word', child: Text('Save as Word')),
+              ];
+            },
+          ),
+
           if (_editMode) ...[
             IconButton(
               icon: Icon(Icons.edit_note, color: _contentEditMode ? Colors.blue : null),
@@ -507,6 +540,224 @@ class _DrawingScreenState extends State<DrawingScreen> {
     );
   }
 
+
+  // In your _DrawingScreenState class
+  String? _currentFilePath; // Track the current file path
+
+  Future<void> _saveFile() async {
+    try {
+      // Prepare the file content
+      final fileContent = jsonEncode(_serializeData());
+      final bytes = Uint8List.fromList(fileContent.codeUnits); // Convert to bytes
+      
+      String? path;
+      
+      if (_currentFilePath != null) {
+        // Overwrite existing file
+        final file = File(_currentFilePath!);
+        await file.writeAsBytes(bytes);
+      } else {
+        // First time saving - show save dialog
+        path = await FilePicker.platform.saveFile(
+          dialogTitle: 'Save your document',
+          fileName: 'document.json',
+          allowedExtensions: ['json'],
+          type: FileType.custom,
+          bytes: bytes, // Add this line to provide the file content
+        );
+        
+        if (path != null) {
+          _currentFilePath = path;
+        }
+      }
+      
+      if (path != null || _currentFilePath != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('File saved successfully')),
+        );
+      }
+    }  on FileSystemException catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Storage error: ${e.message}')),
+      );
+    } on PlatformException catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Platform error: ${e.message}')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error saving file: $e')),
+      );
+    }
+  }
+
+  void _newFile() {
+    setState(() {
+      rectangles.clear();
+      textElements.clear();
+      dividerLines.clear();
+      _selectedElement = null;
+      _selectedLine = null;
+      _currentFilePath = null; // Reset the path
+    });
+  }
+
+  // Open a saved file
+  Future<void> _openFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null) {
+        File file = File(result.files.single.path!);
+        String content = await file.readAsString();
+        
+        // Clean the content before parsing
+        content = content.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '');
+        
+        Map<String, dynamic> data = jsonDecode(content);
+
+        setState(() {
+          _currentFilePath = result.files.single.path;
+          rectangles = (data['rectangles'] as List)
+              .map((r) => Rect.fromLTWH(
+                    r['left']?.toDouble() ?? 0,
+                    r['top']?.toDouble() ?? 0,
+                    r['width']?.toDouble() ?? 100,
+                    r['height']?.toDouble() ?? 50,
+                  ))
+              .toList();
+          
+          textElements = (data['textElements'] as List).map((te) {
+            var element = TextElement(
+              position: Offset(
+                (te['position']['dx'] ?? 0).toDouble(),
+                (te['position']['dy'] ?? 0).toDouble(),
+              ),
+              size: Size(
+                (te['size']['width'] ?? 100).toDouble(),
+                (te['size']['height'] ?? 50).toDouble(),
+              ),
+              controller: TextEditingController(text: te['text'] ?? ''),
+            );
+            element.alignment = TextAlign.values[te['alignment'] ?? 0];
+            element.fontSize = (te['fontSize'] ?? 16).toDouble();
+            element.fontFamily = te['fontFamily'] ?? 'Arial';
+            return element;
+          }).toList();
+          
+          dividerLines = (data['dividerLines'] as List).map((dl) {
+            return DividerLine(
+              isHorizontal: dl['isHorizontal'] ?? true,
+              position: Offset(
+                (dl['position']['dx'] ?? 0).toDouble(),
+                (dl['position']['dy'] ?? 0).toDouble(),
+              ),
+              length: (dl['length'] ?? 100).toDouble(),
+            );
+          }).toList();
+        });
+      }
+    } catch (e, stack) {
+      print('Error opening file: $e\n$stack');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error opening file. File may be corrupted.')),
+      );
+    }
+  }
+
+  // Save as PDF
+  Future<void> _saveAsPdf() async {
+    final pdf = pw.Document();
+
+    // Add a page with all the content
+    pdf.addPage(pw.Page(
+      build: (pw.Context context) {
+        return pw.Column(
+          children: [
+            for (var element in textElements)
+              pw.Container(
+                width: element.size.width,
+                height: element.size.height,
+                child: pw.Text(
+                  element.controller.text,
+                  style: pw.TextStyle(
+                    fontSize: element.fontSize,
+                    font: pw.Font.helvetica(),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    ));
+
+    // Save the PDF file
+    final output = await getTemporaryDirectory();
+    final file = File('${output.path}/document.pdf');
+    await file.writeAsBytes(await pdf.save());
+
+    // Share the file
+    await Share.shareXFiles([XFile(file.path)], text: 'Here is the PDF export');
+  }
+
+  // Save as Word document
+  // Future<void> _saveAsWord() async {
+  //   try {
+  //     // Create a simple Word document
+  //     final doc = DocxTemplate();
+  //     final content = textElements.map((e) => e.controller.text).join('\n\n'); 
+  //     // Generate the document
+  //     final bytes = await doc.generate({
+  //       'title': 'Exported Document',
+  //       'content': content,
+  //     } as Content);
+  //     // Save the file
+  //     final output = await getTemporaryDirectory();
+  //     final file = File('${output.path}/document.docx');
+  //     await file.writeAsBytes(bytes!);
+  //     // Share the file
+  //     await Share.shareXFiles([XFile(file.path)], text: 'Here is the Word export');
+  //   } catch (e) {
+  //     ScaffoldMessenger.of(context).showSnackBar(
+  //       SnackBar(content: Text('Error creating Word document: $e')),
+  //     );
+  //   }
+  // }
+
+  // Helper method to serialize data for saving
+  Map<String, dynamic> _serializeData() {
+    return {
+      'rectangles': rectangles.map((r) => {
+        'left': r.left,
+        'top': r.top,
+        'width': r.width,
+        'height': r.height,
+      }).toList(),
+      'textElements': textElements.map((te) {
+        // Clean the text before saving
+        String cleanText = te.controller.text.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '');
+        
+        return {
+          'position': {'dx': te.position.dx, 'dy': te.position.dy},
+          'size': {'width': te.size.width, 'height': te.size.height},
+          'text': cleanText, // Use cleaned text
+          'alignment': te.alignment.index,
+          'fontSize': te.fontSize,
+          'fontFamily': te.fontFamily,
+        };
+      }).toList(),
+      'dividerLines': dividerLines.map((dl) => {
+        'isHorizontal': dl.isHorizontal,
+        'position': {'dx': dl.position.dx, 'dy': dl.position.dy},
+        'length': dl.length,
+      }).toList(),
+    };
+  }
+
+  
 
   // Handle tapping on divider lines
   void _handleLineTap(Offset tapPosition) {
@@ -1636,18 +1887,25 @@ class _TextInputDialogState extends State<TextInputDialog> {
         autofocus: true,
       ),
       actions: [
+        
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: Text('Cancel'),
         ),
         TextButton(
           onPressed: () {
-            if (_controller.text.isNotEmpty) Navigator.pop(context, _controller.text);
+            if (_controller.text.isNotEmpty) Navigator.pop(context, _cleanText(_controller.text));
           },
           child: Text('Add'),
         ),
       ],
     );
+  }
+
+  String _cleanText(String input) {
+    return input.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '') // Remove control chars
+              .replaceAll('\u2028', '') // Remove line separators
+              .replaceAll('\u2029', ''); // Remove paragraph separators
   }
 }
 
