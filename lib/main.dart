@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:sketch_form_app_update/drawing_screen.dart';
+import 'package:sketch_form_app_update/old_code_screen.dart';
 
 void main() {
   runApp(MyApp());
@@ -16,6 +16,7 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
+      debugShowCheckedModeBanner: false,
       home: DrawingScreen(),
     );
   }
